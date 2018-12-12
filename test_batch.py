@@ -188,7 +188,7 @@ def main():
     test_image_dir = sample_conf["test_image_dir"]
     model_save_dir = sample_conf["model_save_dir"]
     char_set = sample_conf["char_set"]
-    total = 100
+    total = 500
     tb = TestBatch(test_image_dir, char_set, model_save_dir, total)
     tb.test_batch()
 

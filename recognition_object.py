@@ -136,7 +136,7 @@ def main():
     char_set = sample_conf["char_set"]
     model_save_dir = sample_conf["model_save_dir"]
     R = Recognizer(image_height, image_width, max_captcha, char_set, model_save_dir)
-    r_img = Image.open("./sample/test/2b3n_6915e26c67a52bc0e4e13d216eb62b37.jpg")
+    r_img = Image.open("./sample/test/0025_15435538968660884.png")
     t = R.rec_image(r_img)
     print(t)
 

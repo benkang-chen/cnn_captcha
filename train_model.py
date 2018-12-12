@@ -13,6 +13,7 @@ from tensorflow.python.framework.errors_impl import NotFoundError
 # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 # os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
+
 class TrainError(Exception):
     pass
 
@@ -61,7 +62,7 @@ class TrainModel(object):
         print("-->验证码共{}类 {}".format(self.char_set_len, char_set))
         print("-->使用测试集为 {}".format(img_path))
 
-        # tf初始化占位符
+        # tf初始化占位符 [None, 3]表示列是3，行不定
         self.X = tf.placeholder(tf.float32, [None, image_height * image_width])  # 特征向量
         self.Y = tf.placeholder(tf.float32, [None, self.max_captcha * self.char_set_len])  # 标签
         self.keep_prob = tf.placeholder(tf.float32)  # dropout值
@@ -151,32 +152,88 @@ class TrainModel(object):
         print("所有图片格式校验通过")
 
     def model(self):
+        # -1 表示自动推断的维度
         x = tf.reshape(self.X, shape=[-1, self.image_height, self.image_width, 1])
         print(">>> input x: {}".format(x))
-
         # 卷积层1
+        # tf.get_variable 获取已存在的变量（要求不仅名字，而且初始化方法等各个参数都一样），如果不存在，就新建一个。
+        # 可以用各种初始化方法，不用明确指定值。
+        # tf.contrib.layers.xavier_initializer 该函数返回一个用于初始化权重的初始化程序 “Xavier” 。
+        # 这个初始化器是用来保持每一层的梯度大小都差不多相同。返回值：初始化权重矩阵
         wc1 = tf.get_variable(name='wc1', shape=[3, 3, 1, 32], dtype=tf.float32,
                               initializer=tf.contrib.layers.xavier_initializer())
+        # 初始化偏差项
         bc1 = tf.Variable(self.b_alpha * tf.random_normal([32]))
+        # tf.nn.conv2d(input, filter, strides, padding, use_cudnn_on_gpu=None, name=None)
+        # 1.第一个参数input：指需要做卷积的输入图像，它要求是一个Tensor，具有[batch, in_height, in_width, in_channels]
+        #   这样的shape，具体含义是[训练时一个batch的图片数量, 图片高度, 图片宽度, 图像通道数]，注意这是一个4维的Tensor，
+        #   要求类型为float32和float64其中之一
+        # 2.第二个参数filter：相当于CNN中的卷积核，它要求是一个Tensor，
+        #   具有[filter_height, filter_width, in_channels, out_channels]这样的shape，
+        #   具体含义是[卷积核的高度，卷积核的宽度，图像通道数，卷积核个数]，要求类型与参数input相同，有一个地方需要注意，
+        #   第三维in_channels，就是参数input的第四维
+        # 3.第三个参数strides：卷积时在图像每一维的步长，这是一个一维的向量，长度4
+        # 4.第四个参数padding：string类型的量，只能是"SAME","VALID"其中之一，这个值决定了不同的卷积方式,当其为‘SAME’时，
+        #   表示卷积核可以停留在图像边缘
+        # 5.第五个参数：use_cudnn_on_gpu:bool类型，是否使用cudnn加速，默认为true
+        # 结果返回一个Tensor，这个输出，就是我们常说的feature map
         conv1 = tf.nn.relu(tf.nn.bias_add(tf.nn.conv2d(x, wc1, strides=[1, 1, 1, 1], padding='SAME'), bc1))
+        # tf.nn.max_pool
+        # 第一个参数value：需要池化的输入，一般池化层接在卷积层后面，所以输入通常是feature map，
+        # 依然是[batch, height, width, channels]这样的shape
+        #
+        # 第二个参数ksize：池化窗口的大小，取一个四维向量，一般是[1, height, width, 1]，
+        # 因为我们不想在batch和channels上做池化，所以这两个维度设为了1
+        #
+        # 第三个参数strides：和卷积类似，窗口在每一个维度上滑动的步长，一般也是[1, stride,stride, 1]
+        #
+        # 第四个参数padding：和卷积类似，可以取'VALID' 或者'SAME'
         conv1 = tf.nn.max_pool(conv1, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+        # tf.nn.dropout是TensorFlow里面为了防止或减轻过拟合而使用的函数，它一般用在全连接层。
+        #
+        # Dropout就是在不同的训练过程中随机扔掉一部分神经元。也就是让某个神经元的激活值以一定的概率p，让其停止工作，
+        # 这次训练过程中不更新权值，也不参加神经网络的计算。但是它的权重得保留下来（只是暂时不更新而已）
+        # 因为下次样本输入时它可能又得工作了。
+        x_shape = x.shape.as_list()
+        if x_shape[0] is None:
+            x_shape[0] = 100
+        deconv = tf.nn.conv2d_transpose(conv1, wc1, x_shape, strides=[1, 2, 2, 1], padding='SAME')
+        tf.summary.image('conv1_out', deconv, 10)
         conv1 = tf.nn.dropout(conv1, self.keep_prob)
-
+        conv1_shape = conv1.shape.as_list()
+        if conv1_shape[0] is None:
+            conv1_shape[0] = 100
+        tf.summary.histogram('conv1/wc1', wc1)
+        tf.summary.histogram('conv1/bc1', bc1)
         # 卷积层2
         wc2 = tf.get_variable(name='wc2', shape=[3, 3, 32, 64], dtype=tf.float32,
                               initializer=tf.contrib.layers.xavier_initializer())
         bc2 = tf.Variable(self.b_alpha * tf.random_normal([64]))
         conv2 = tf.nn.relu(tf.nn.bias_add(tf.nn.conv2d(conv1, wc2, strides=[1, 1, 1, 1], padding='SAME'), bc2))
         conv2 = tf.nn.max_pool(conv2, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+        deconv2 = tf.nn.conv2d_transpose(conv2, wc2, conv1_shape, strides=[1, 2, 2, 1], padding='SAME')
+        deconv2_ = tf.nn.conv2d_transpose(deconv2, wc1, x_shape, strides=[1, 2, 2, 1], padding='SAME')
+        tf.summary.image('conv2_out', deconv2_, 10)
         conv2 = tf.nn.dropout(conv2, self.keep_prob)
-
+        conv2_shape = conv2.shape.as_list()
+        if conv2_shape[0] is None:
+            conv2_shape[0] = 100
+        tf.summary.histogram('conv2/wc2', wc2)
+        tf.summary.histogram('conv2/bc2', bc2)
         # 卷积层3
         wc3 = tf.get_variable(name='wc3', shape=[3, 3, 64, 128], dtype=tf.float32,
                               initializer=tf.contrib.layers.xavier_initializer())
         bc3 = tf.Variable(self.b_alpha * tf.random_normal([128]))
         conv3 = tf.nn.relu(tf.nn.bias_add(tf.nn.conv2d(conv2, wc3, strides=[1, 1, 1, 1], padding='SAME'), bc3))
         conv3 = tf.nn.max_pool(conv3, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+
+        deconv3 = tf.nn.conv2d_transpose(conv3, wc3, conv2_shape, strides=[1, 2, 2, 1], padding='SAME')
+        deconv3_ = tf.nn.conv2d_transpose(deconv3, wc2, conv1_shape, strides=[1, 2, 2, 1], padding='SAME')
+        deconv3__ = tf.nn.conv2d_transpose(deconv3_, wc1, x_shape, strides=[1, 2, 2, 1], padding='SAME')
+        tf.summary.image('conv3_out', deconv3__, 10)
         conv3 = tf.nn.dropout(conv3, self.keep_prob)
+        tf.summary.histogram('conv3/wc3', wc3)
+        tf.summary.histogram('conv3/bc3', bc3)
         print(">>> convolution 3: ", conv3.shape)
         next_shape = conv3.shape[1] * conv3.shape[2] * conv3.shape[3]
 
@@ -201,6 +258,7 @@ class TrainModel(object):
         print(">>> End model test")
         # 计算概率 损失
         cost = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=y_predict, labels=self.Y))
+        tf.summary.scalar('loss', cost)
         # 梯度下降
         optimizer = tf.train.AdamOptimizer(learning_rate=0.0001).minimize(cost)
         # 计算准确率
@@ -210,11 +268,14 @@ class TrainModel(object):
         # 计算准确率
         correct_pred = tf.equal(max_idx_p, max_idx_l)
         accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
+        tf.summary.scalar('acc', accuracy)
         # 模型保存对象
         saver = tf.train.Saver()
         with tf.Session() as sess:
             init = tf.global_variables_initializer()
+            merged = tf.summary.merge_all()
             sess.run(init)
+            writer = tf.summary.FileWriter(logdir="./logs", graph=sess.graph)
             # 恢复模型
             if os.path.exists(self.model_save_dir):
                 try:
@@ -225,12 +286,15 @@ class TrainModel(object):
             else:
                 pass
             step = 1
-            for i in range(3000):
+            for i in range(6000):
                 batch_x, batch_y = self.get_batch(i, size=128)
                 _, cost_ = sess.run([optimizer, cost], feed_dict={self.X: batch_x, self.Y: batch_y, self.keep_prob: 0.75})
+                # writer.add_summary(tf.Summary(value=[tf.Summary.Value(tag="loss", simple_value=cost_)]), global_step=i)
                 if step % 10 == 0:
                     batch_x_test, batch_y_test = self.get_batch(i, size=100)
+                    res = sess.run(merged, feed_dict={self.X: batch_x_test, self.Y: batch_y_test, self.keep_prob: 1.})
                     acc = sess.run(accuracy, feed_dict={self.X: batch_x_test, self.Y: batch_y_test, self.keep_prob: 1.})
+                    writer.add_summary(res, i)
                     print("第{}次训练 >>> 准确率为 {} >>> loss {}".format(step, acc, cost_))
                     # 准确率达到99%后保存并停止
                     if acc > 0.99:
@@ -241,6 +305,7 @@ class TrainModel(object):
                     saver.save(sess, self.model_save_dir)
                 step += 1
             saver.save(sess, self.model_save_dir)
+            writer.close()
 
     def recognize_captcha(self):
         label, captcha_array = self.gen_captcha_text_image(random.choice(self.img_list))

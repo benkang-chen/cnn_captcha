@@ -3,7 +3,8 @@ import re
 
 
 file_path = "../README.md"
-with open(file_path, "r") as f:
+# 指定编码方式，否则可能报编码错误
+with open(file_path, "r", encoding='UTF-8') as f:
     content = f.readlines()
 
 for c in content:
